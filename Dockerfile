@@ -57,7 +57,8 @@ RUN apk add --no-cache                \
 
 # Copy source to container for sake of build
 ARG BUILD_DIR=/tmp/guacamole-server
-COPY . ${BUILD_DIR}
+RUN git clone https://github.com/apache/guacamole-server ${BUILD_DIR} 
+# COPY ./guacamole-server ${BUILD_DIR}
 
 #
 # Base directory for installed build artifacts.
@@ -163,6 +164,57 @@ RUN ${BUILD_DIR}/src/guacd-docker/bin/list-dependencies.sh \
         ${FREERDP_LIB_PATH}/*guac*.so   \
         > ${PREFIX_DIR}/DEPENDENCIES
 
+
+
+
+
+
+
+
+
+# Use same Alpine version as the base for the mountpoint-s3 image
+FROM alpine:${ALPINE_BASE_IMAGE} AS mounts3
+
+
+# Install build dependencies
+RUN apk add --no-cache                \
+        gcc \
+        curl \
+        git \
+        zlib \
+        g++ \
+        cmake\ 
+        make \
+        pkgconfig \
+        fuse \
+        fuse-dev \
+        clang16-libclang \
+        libunwind
+
+# Enable static linking
+RUN export RUSTFLAGS="-C target-feature=-crt-static"
+RUN export RUST_BACKTRACE=1
+
+# Not sure if it's a good fix, but the compiler issued an error and suggested this change:
+# RUN sed --in-place 's/aws_thread_id_t = 0/aws_thread_id_t = std::ptr::null_mut()/' mountpoint-s3-crt/src/s3/client.rs
+
+# Install rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    source "$HOME/.cargo/env"
+
+# Build mountpoint-s3
+RUN git clone --recurse-submodules https://github.com/awslabs/mountpoint-s3.git && \
+    source "$HOME/.cargo/env" && \
+    cd mountpoint-s3 && \
+    RUSTFLAGS="-C target-feature=-crt-static" cargo build --release
+
+
+
+
+
+
+
+
 # Use same Alpine version as the base for the runtime image
 FROM alpine:${ALPINE_BASE_IMAGE}
 
@@ -199,11 +251,35 @@ RUN apk add --no-cache                \
 # Checks the operating status every 5 minutes with a timeout of 5 seconds
 HEALTHCHECK --interval=5m --timeout=5s CMD nc -z 127.0.0.1 4822 || exit 1
 
+
+
+
+
+# mount S3 -- Requires increase the Amazon EC2 Instance Metadata Service v2 Hop Limit to at least 2 - So the container can see the IAM credentials through NAT
+ARG BUCKET_NAME=guacamole-logs 
+ARG DIRECTORY=/record
+
+COPY --from=mounts3 /mountpoint-s3/target/release/mount-s3 .
+RUN apk add --no-cache fuse
+RUN mkdir -p ${DIRECTORY}
+# CMD ./mount-s3 ${BUCKET_NAME} ${DIRECTORY} 
+RUN mkdir -p /opt/mount-s3 && mv ./mount-s3 /opt/mount-s3/.
+
+ENV MOUNT_S3_PARAMETERS="guacamole-logs-s3 /record"
+
+
+
+
 # Create a new user guacd
 ARG UID=1000
 ARG GID=1000
 RUN groupadd --gid $GID guacd
 RUN useradd --system --create-home --shell /sbin/nologin --uid $UID --gid $GID guacd
+
+
+# Fix for /record to be reachable by mount-s3
+RUN chown 1000:1000 /record
+
 
 # Run with user guacd
 USER guacd
@@ -216,4 +292,4 @@ EXPOSE 4822
 # Note the path here MUST correspond to the value specified in the 
 # PREFIX_DIR build argument.
 #
-CMD /opt/guacamole/sbin/guacd -b 0.0.0.0 -L $GUACD_LOG_LEVEL -f
+CMD /opt/mount-s3/mount-s3 $MOUNT_S3_PARAMETERS ; /opt/guacamole/sbin/guacd -b 0.0.0.0 -L $GUACD_LOG_LEVEL -f
