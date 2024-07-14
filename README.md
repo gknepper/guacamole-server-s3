@@ -14,3 +14,7 @@ All the changes were made on Dockerfile only. The code base is guacamole-server 
 Overwrite the variable: `MOUNT_S3_PARAMETERS` with the parameter from https://github.com/awslabs/mountpoint-s3
 
 A S3 directory /record will be mounted to save the recordings. 
+
+## Pre-built Image
+
+[https://hub.docker.com/r/gabrielkm/guacamole-server-s3](https://hub.docker.com/r/gabrielkm/guacamole-server-s3)
